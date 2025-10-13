@@ -14,7 +14,7 @@ library(lubridate)
 
 
 # Load all the datasets
-std <- read_tsv("data/std.tsv")
+std <- read_tsv("data/std_d.tsv")
 
 ##### Step 1 :  Define a regular sequence of dates #####
 head(std)
@@ -121,6 +121,8 @@ tab <- tablo_merged %>%
     T, CHLA, NO3, S, O, SIOH4, MES
   )
 
+
+
 ##### Step 5 : Calculation of smoothed median per week = clim #####
 
 # Median per month per variable
@@ -160,6 +162,8 @@ clim_wk_smooth <- clim_wk %>%
   ) %>%
   ungroup() %>%
   select(week, depth, name, season = med_avg)
+
+write_tsv(clim_wk_smooth, file="data/clim_wk_smooth.tsv")
 
 # Weekly anomaly
 tab_anom_long <- tab_long %>%
