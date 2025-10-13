@@ -24,7 +24,14 @@ std <- std %>% filter(name != "pH")
 std_pivot <- std %>%pivot_wider(names_from = "name", values_from="value" )
 std_pivot<- as.data.frame(std_pivot)
 
+# Log the chla variable, log10+1 to better deal with 0 that will be -inf otherwise
+std_pivot <- std_pivot %>%mutate(
+  CHLA= log10(CHLA+1)
+)
+
+std_d <- std_pivot %>%pivot_longer(cols=c("T","S","O","NO3","NO2","PO4","SIOH4","COP","MES","CHLA","Sigma"), values_to="value", names_to="name")
 
 # Save it
 write_tsv(std_pivot, file= "data/std_pivot.tsv")
 write_tsv(std, file= "data/std.tsv")
+write_tsv(std_d, file="data/std_d.tsv")
