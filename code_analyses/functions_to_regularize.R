@@ -279,4 +279,21 @@ plot_rf_series <- function(df_long_rf,
     labs(x = "Date", y = NULL)
 }
 
-
+# Function to remove median and smooth
+weekly_clim_smooth <- function(df_long_idx) {
+  # df_long_idx: cols = target_date, depth, name, value
+  df_long_idx %>%
+    dplyr::mutate(week = lubridate::isoweek(target_date)) %>%
+    dplyr::group_by(week, depth, name) %>%
+    dplyr::summarise(med = median(value, na.rm = TRUE), .groups = "drop") %>%
+    dplyr::arrange(depth, name, week) %>%
+    dplyr::group_by(depth, name) %>%
+    dplyr::mutate(
+      season = castr::slide(
+        med, k = 1, n = 3,
+        fun = weighted.mean, w = c(1, 2, 1), na.rm = TRUE
+      )
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(week, depth, name, season)
+}
