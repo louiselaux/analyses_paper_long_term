@@ -19,8 +19,7 @@ extract_wanted_level_from_tablo <- function(
     level_col="order_like",
     value_col="concentration",
     depth=10) {
-  df<- tablo %>% group_by(date=as.Date(object_date), name= .data[[level_col]], depth)%>%summarise(value= sum(.data[[value_col]], na.rm = TRUE),
-                                                                                                  .groups = "drop")
+  df<- tablo %>% group_by(date=as.Date(object_date), name= .data[[level_col]], depth)%>%summarise(value= sum(.data[[value_col]], na.rm = TRUE),.groups = "drop") %>% dplyr::mutate(value = log10(value + 1))
   return(df)
 }
 
