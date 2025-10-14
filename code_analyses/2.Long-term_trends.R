@@ -37,6 +37,8 @@ tab_anom_long <- final_panel %>% mutate(week=isoweek(target_date))%>%pivot_longe
 
 dstl <- tab_anom_long
 
+write_tsv(dstl, "data/dtsl_all.tsv")
+
 ##### Step 2 : Gls regression #####
 
 # Function to have the calculation of statistics
@@ -144,6 +146,7 @@ stats <- stats %>%
 
 write_tsv(stats, file="data/stats_all.tsv")
 
+
 # What model was used
 stats %>%
   mutate(model_used = case_when(
@@ -175,3 +178,123 @@ ggplot() +
     axis.ticks.length = unit(0.1, "cm"),
     strip.background = element_rect(fill = "lightblue")
   )
+
+
+##### Store the residuals and predictions#####
+# Calculation of residuals
+
+residuals <- dstl %>%
+  filter(depth == "10") %>%
+  group_by(name) %>%
+  group_modify(~{
+    x <- .x %>% filter(!is.na(deseason))
+    if (nrow(x) < 5) {
+      #otherwise problem
+      return(bind_cols(
+        tibble(
+          mk_p.value    = NA_real_,
+          gls_r.squared = NA_real_,
+          gls_p.value   = NA_real_,
+          gls_intercept = NA_real_,
+          gls_slope     = NA_real_,
+          gls_cor.struct= NA_character_,
+          gls_acf       = NA_real_
+        ),
+        tibble(diag = list(tibble(
+          target_date       = as.Date(character()),
+          depth             = typeof(x$depth) %in% "character" ? character() : numeric(),
+          pred_gls_deseason = numeric(),
+          resid_gls         = numeric(),
+          resid_norm        = numeric()
+        )))
+      ))
+    }
+    
+    # Mann-Kendall
+    mkt <- trend::mk.test(x$deseason)
+    
+    # GLS or AR
+    m <- gls(deseason ~ target_date, data = x)
+    a <- pacf(residuals(m, type = "normalized"), plot = FALSE)
+    
+    if (abs(a$acf[1]) > 0.2) {
+      m <- gls(deseason ~ target_date, data = x,
+               correlation = corAR1(value = round(a$acf[1], 1)))
+      a <- pacf(residuals(m, type = "normalized"), plot = FALSE)
+      
+      # AR(2) 
+      if (length(a$acf) >= 2 && abs(a$acf[2]) > 0.2) {
+        phi <- round(a$acf[1:2], 1)
+        if (sum(phi) > 0.9) phi <- phi - 0.1
+        m <- gls(deseason ~ target_date, data = x,
+                 correlation = corARMA(value = phi, p = 2, q = 0, form = ~ target_date))
+      }
+    }
+    
+    # Calculation of residuals and predictions on latest model
+    pred    <- predict(m, newdata = x)
+    r_norm  <- residuals(m, type = "normalized")
+    r_raw   <- x$deseason - pred
+    
+    diag_tbl <- tibble(
+      target_date       = x$target_date,
+      depth             = x$depth,
+      pred_gls_deseason = pred,
+      resid_gls         = r_raw,
+      resid_norm        = r_norm
+    )
+    
+    bind_cols(
+      glance(mkt) |> select(mk_p.value = p.value),
+      glance.gls(m) |>
+        select(r.squared, p.value, intercept, slope, cor.struct, acf = acf1) |>
+        rename_with(~paste0("gls_", .)),
+      tibble(diag = list(diag_tbl))   # get a list
+    )
+  }) %>%
+  ungroup()
+
+
+# Predictions, residuals
+
+##
+stats_2 <- residuals %>% select(-diag)
+
+residuals_df <- residuals %>%
+  select(name, diag) %>%
+  unnest(diag)         # Get one column 
+
+# Problem here
+dstl_fix <- dstl %>%
+  mutate(depth = as.numeric(depth))  
+
+residuals_df_fix <- residuals_df %>%
+  mutate(depth = as.numeric(depth))
+
+## Without the trend
+dstl2 <- dstl_fix %>%
+  filter(depth == 10) %>%               
+  left_join(residuals_df_fix, by = c("name","target_date","depth")) %>%
+  mutate(
+    pred_gls_deseason = as.numeric(pred_gls_deseason),
+    resid_gls         = as.numeric(resid_gls),
+    detrended_A       = as.numeric(value) - pred_gls_deseason,
+    detrended_B       = season + resid_gls
+  )
+
+# Did it work properly?
+int <- dstl2 %>% filter(detrended_A != detrended_B)
+
+dstl2 %>%
+  mutate(diff = abs(detrended_A - detrended_B)) %>%
+  summarise(
+    n_mismatch = sum(!is.na(diff) & diff > 1e-10),
+    max_diff   = max(diff, na.rm = TRUE)
+  )
+
+
+# Save them all
+write_tsv(stats_2,        "data/stats_with_models.tsv")
+write_tsv(residuals_df, "data/residuals_depth10.tsv")
+write_tsv(dstl2,        "data/dstl_with_detrended.tsv")
+
