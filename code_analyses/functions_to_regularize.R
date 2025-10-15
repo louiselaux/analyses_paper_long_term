@@ -41,33 +41,6 @@ tag_gaps <- function(table_reg){
 }
 
 
-# Version for plankton
-tag_gaps_2 <- function(table_reg, tolerance_days_obs = 3, by_days = 14){
-  table_reg %>%
-    dplyr::arrange(name, target_date, depth) %>%
-    dplyr::group_by(name, depth) %>%
-    dplyr::mutate(
-      # Real observations
-      value_obs     = dplyr::if_else(date_diff <= tolerance_days_obs, value, NA_real_),
-      is_na_obs     = is.na(value_obs),
-      start_gap_obs = is_na_obs & !dplyr::lag(is_na_obs, default = FALSE),
-      nb_gap_obs    = cumsum(start_gap_obs),
-      gap_id_obs    = dplyr::if_else(is_na_obs, nb_gap_obs, NA_integer_),
-      
-      # Values for linear interpolation
-      value_tol     = dplyr::if_else(date_diff <= 7, value, NA_real_),
-      is_na_tol     = is.na(value_tol),
-      start_gap_tol = is_na_tol & !dplyr::lag(is_na_tol, default = FALSE),
-      nb_gap_tol    = cumsum(start_gap_tol),
-      gap_id_tol    = dplyr::if_else(is_na_tol, nb_gap_tol, NA_integer_)
-    ) %>%
-    dplyr::group_by(name, depth, gap_id_obs) %>%
-    dplyr::mutate(size_gap_obs = dplyr::if_else(is.na(gap_id_obs), 0L, dplyr::n())) %>%
-    dplyr::ungroup() %>%
-    dplyr::group_by(name, depth, gap_id_tol) %>%
-    dplyr::mutate(size_gap_tol = dplyr::if_else(is.na(gap_id_tol), 0L, dplyr::n())) %>%
-    dplyr::ungroup()
-}
 
 ##### Step 3 : Linear interpolation for small gaps  #####
 interp_small_gaps <- function(ts_all, max_gap = 5){
@@ -86,40 +59,7 @@ interp_small_gaps <- function(ts_all, max_gap = 5){
     ungroup()
 }
 
-# Version for plankton
-interp_small_gaps_2 <- function(ts_all, max_gap = 3){
-  ts_all %>%
-    group_by(name, depth) %>%
-    mutate(
-      raw_value    = value,
-      value_interp = castr::interpolate(
-        x    = closest_date[!is.na(raw_value)],
-        y    = raw_value[!is.na(raw_value)],
-        xout = target_date
-      ),
-      value_final  = dplyr::coalesce(value_obs, value_interp),
-      value_final  = if_else(size_gap_tol >= max_gap, NA_real_, value_final)
-    ) %>%
-    ungroup()
-}
 
-# 
-
-interp_small_gaps_plankton <-function(ts_all, max_gap = 5){
-  ts_all %>%
-    group_by(name, depth) %>%
-    mutate(
-      raw_value    = value,
-      value_interp = castr::interpolate(
-        x    = closest_date[!is.na(raw_value)],
-        y    = raw_value[!is.na(raw_value)],
-        xout = target_date
-      ),
-      value_final  = dplyr::coalesce(value_obs, value_interp),
-      value_final  = if_else(size_gap > max_gap, NA_real_, value_final)
-    ) %>%
-    ungroup()
-}
 
 ##### Step 4 : Calculate the smoothed median #####
 weekly_climatology <- function(tab_long){
@@ -262,7 +202,7 @@ reconstruct_long_with_obs <- function(final_wide_rf, tablo_merged, obs_wide_raw,
 
 
 
-##### Step 8 : Whole pipeline #####
+##### Step 8 : Whole pipeline  for hydro #####
 run_to_rf <- function(df_long,
                       start_date     = as.Date("1967-01-04"),
                       by_days        = 14,
@@ -271,13 +211,13 @@ run_to_rf <- function(df_long,
                       n_cores        = max(1, parallel::detectCores() %/% 2),
                       vars_fixed_order = NULL # ex: c("T","CHLA","NO3","S","O","SIOH4","MES")
 ){
-  # Step 1–3 : Regularisation + small gaps
+  # Step 1–3 : Regularization + small gaps
   table_reg <- regularize_panel(df_long, start_date, by_days, tolerance_days)
-  ts_all    <- tag_gaps_2(table_reg)
+  ts_all    <- tag_gaps(table_reg)
   obs_wide_raw <- ts_all %>%
     select(target_date, depth, name, value_obs) %>% # value _obs  = value if in the tolerance interval otherwise NA
     tidyr::pivot_wider(names_from = name, values_from = value_obs)
-  interp_lin <- interp_small_gaps_2(ts_all, max_gap = max_gap_interp)
+  interp_lin <- interp_small_gaps(ts_all, max_gap = max_gap_interp)
   
   
   # Cells filled by linear interpolation (small gaps)
@@ -424,3 +364,176 @@ weekly_clim_smooth <- function(df_long_idx) {
     dplyr::ungroup() %>%
     dplyr::select(week, depth, name, season)
 }
+
+
+# Functions for plankton
+tag_gaps_2 <- function(table_reg, tolerance_days_obs = 3, by_days = 14){
+  table_reg %>%
+    dplyr::arrange(name, target_date, depth) %>%
+    dplyr::group_by(name, depth) %>%
+    dplyr::mutate(
+      # Real observations
+      value_obs     = dplyr::if_else(date_diff <= tolerance_days_obs, value, NA_real_),
+      is_na_obs     = is.na(value_obs),
+      start_gap_obs = is_na_obs & !dplyr::lag(is_na_obs, default = FALSE),
+      nb_gap_obs    = cumsum(start_gap_obs),
+      gap_id_obs    = dplyr::if_else(is_na_obs, nb_gap_obs, NA_integer_),
+      
+      # Values for linear interpolation
+      value_tol     = dplyr::if_else(date_diff <= 7, value, NA_real_),
+      is_na_tol     = is.na(value_tol),
+      start_gap_tol = is_na_tol & !dplyr::lag(is_na_tol, default = FALSE),
+      nb_gap_tol    = cumsum(start_gap_tol),
+      gap_id_tol    = dplyr::if_else(is_na_tol, nb_gap_tol, NA_integer_)
+    ) %>%
+    dplyr::group_by(name, depth, gap_id_obs) %>%
+    dplyr::mutate(size_gap_obs = dplyr::if_else(is.na(gap_id_obs), 0L, dplyr::n())) %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by(name, depth, gap_id_tol) %>%
+    dplyr::mutate(size_gap_tol = dplyr::if_else(is.na(gap_id_tol), 0L, dplyr::n())) %>%
+    dplyr::ungroup()
+}
+
+
+# Interpolation
+interp_small_gaps_2 <- function(ts_all, max_gap = 3){
+  ts_all %>%
+    group_by(name, depth) %>%
+    mutate(
+      raw_value    = value,
+      value_interp = castr::interpolate(
+        x    = closest_date[!is.na(raw_value)],
+        y    = raw_value[!is.na(raw_value)],
+        xout = target_date
+      ),
+      value_final  = dplyr::coalesce(value_obs, value_interp),
+      value_final  = if_else(size_gap_tol >= max_gap, NA_real_, value_final)
+    ) %>%
+    ungroup()
+}
+
+
+###### Whole pipeline plankton#####
+
+run_to_clim <- function(df_long,
+                        start_date     = as.Date("1967-01-04"),
+                        by_days        = 14,
+                        tolerance_days = 3,
+                        max_gap_interp = 3,  
+                        vars_fixed_order = NULL) {
+  
+  stopifnot(all(c("date","depth","name","value") %in% names(df_long)))
+  
+  # regularization
+  table_reg <- regularize_panel(df_long, start_date, by_days, tolerance_days)
+  ts_all    <- tag_gaps_2(table_reg, tolerance_days_obs = tolerance_days)
+  
+  # Observed values
+  obs_wide_raw <- ts_all %>%
+    dplyr::select(target_date, depth, name, value_obs) %>%
+    tidyr::pivot_wider(names_from = name, values_from = value_obs)
+  
+  # linear interpolation on small gaps
+  interp_lin <- interp_small_gaps_2(ts_all, max_gap = max_gap_interp)
+  
+  # Tag cells
+  lin_cells <- interp_lin %>%
+    dplyr::filter(is.na(value_obs), !is.na(value_final),
+                  size_gap_tol > 0, size_gap_tol <= max_gap_interp) %>%
+    dplyr::transmute(target_date, depth, var = name, lin_value = value_final)
+  
+  big_gap_cells <- interp_lin %>%
+    dplyr::filter(is.na(value_obs), size_gap_tol > max_gap_interp) %>%
+    dplyr::transmute(target_date, depth, var = name, is_big_gap = TRUE)
+  
+  # Wide data table
+  interp_wide <- interp_lin %>%
+    dplyr::select(target_date, closest_date, name, value_final, depth) %>%
+    tidyr::pivot_wider(names_from = name, values_from = value_final, names_prefix = "lin_")
+  
+  tablo_merged <- table_reg %>%
+    tidyr::pivot_wider(names_from = name, values_from = value) %>%
+    dplyr::left_join(interp_wide, by = c("target_date","closest_date","depth"))
+  
+  lin_vars  <- grep("^lin_", names(tablo_merged), value = TRUE)
+  core_vars <- gsub("^lin_", "", lin_vars)
+  for (v in core_vars) {
+    if (v %in% names(tablo_merged))
+      tablo_merged[[v]] <- dplyr::coalesce(tablo_merged[[v]], tablo_merged[[paste0("lin_", v)]])
+  }
+  tablo_merged <- tablo_merged %>% dplyr::select(-dplyr::starts_with("lin_"))
+  
+  # Keep variables
+  vars_all <- setdiff(names(tablo_merged), c("target_date","closest_date","depth","date_diff"))
+  if (!is.null(vars_fixed_order)) vars_all <- intersect(vars_fixed_order, vars_all)
+  
+  tab <- tablo_merged %>%
+    dplyr::transmute(target_date, depth, !!!rlang::syms(vars_all))
+  
+  # Clim
+  tab_long <- tab %>%
+    tidyr::pivot_longer(dplyr::all_of(vars_all), names_to = "name", values_to = "value") %>%
+    dplyr::mutate(week = lubridate::isoweek(target_date))
+  
+  clim_wk_smooth <- weekly_climatology(tab_long)
+  readr::write_tsv(clim_wk_smooth, file = "data/clim_wk_smooth.tsv")
+  
+  # Reconstruction of the data table
+  df_long_core <- tab %>%
+    tidyr::pivot_longer(dplyr::all_of(vars_all), names_to = "var", values_to = "val_tmp") %>%
+    dplyr::mutate(week = lubridate::isoweek(target_date)) %>%
+    dplyr::left_join(clim_wk_smooth, by = c("week","depth","var" = "name")) %>%
+    dplyr::select(-week)
+  
+  # Reput everything
+  df_long <- df_long_core %>%
+    dplyr::left_join(
+      obs_wide_raw %>%
+        tidyr::pivot_longer(-c(target_date, depth), names_to = "var", values_to = "obs"),
+      by = c("target_date","depth","var")
+    ) %>%
+    dplyr::left_join(lin_cells,     by = c("target_date","depth","var")) %>%
+    dplyr::left_join(big_gap_cells, by = c("target_date","depth","var")) %>%
+    dplyr::group_by(var, depth) %>%
+    dplyr::mutate(
+      first       = suppressWarnings(min(target_date[!is.na(obs)], na.rm = TRUE)),
+      last        = suppressWarnings(max(target_date[!is.na(obs)], na.rm = TRUE)),
+      has_obs     = is.finite(first) & is.finite(last),
+      in_range    = has_obs & target_date >= first & target_date <= last,
+      was_missing = is.na(obs),
+      
+      # Show tags
+      show_red_lin  = !is.na(lin_value),                          # small gaps being interpolated
+      show_red_clim = is.na(lin_value) & was_missing & in_range,  # big gaps --> clim
+      show_red_rf   = show_red_clim
+    ) %>%
+    dplyr::ungroup()
+  
+  # Finale value
+  df_long$final <- dplyr::case_when(
+    !is.na(df_long$obs)                  ~ df_long$obs,
+    !is.na(df_long$lin_value)            ~ df_long$lin_value,
+    df_long$was_missing & df_long$in_range ~ df_long$season,  
+    TRUE                                 ~ df_long$season     
+  )
+  
+  # To have as previously
+  final_panel <- df_long %>%
+    dplyr::select(target_date, depth, var, final) %>%
+    tidyr::pivot_wider(names_from = var, values_from = final) %>%
+    dplyr::arrange(depth, target_date)
+
+  debug_interp <- interp_lin %>%
+    dplyr::select(target_date, closest_date, depth, name, date_diff,
+                  value, value_obs, value_final, size_gap_tol)
+  
+  list(
+    df_long_rf      = df_long %>%  
+      dplyr::mutate(show_red = show_red_lin | show_red_rf),
+    final_panel_rf  = final_panel,
+    clim_wk_smooth  = clim_wk_smooth,
+    rf_errors       = NULL,         # no RF here 
+    debug_interp    = debug_interp
+  )
+}
+
