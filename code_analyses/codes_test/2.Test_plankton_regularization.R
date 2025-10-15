@@ -103,4 +103,4 @@ u%>%mutate(year=year(target_date))%>%filter(is.na(value_final))%>%select(year,ta
 # Small plot to investigate
 u%>%mutate(year=year(target_date))%>%filter(year %in% c(1979))%>%filter(name%in%c("Acartiidae"))%>%ggplot() + geom_line(aes(x=target_date,y=value_final))+geom_point(aes(x=target_date,y=value_interp),color="lightgreen")+ geom_point(aes(x=closest_date,y=value_tol),color="red")
 
-           
+u%>%mutate(year=year(target_date))%>%filter(name%in%c("Chaetognatha"))%>%ggplot() + geom_line(aes(x=target_date,y=value_final))+geom_point(aes(x=target_date,y=value_interp),color="lightgreen")+ geom_point(aes(x=closest_date,y=value_tol),color="red")          
