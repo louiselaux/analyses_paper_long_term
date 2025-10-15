@@ -40,8 +40,72 @@ tag_gaps <- function(table_reg){
     ungroup()
 }
 
+
+# Version for plankton
+tag_gaps_2 <- function(table_reg, tolerance_days_obs = 3, by_days = 14){
+  table_reg %>%
+    dplyr::arrange(name, target_date, depth) %>%
+    dplyr::group_by(name, depth) %>%
+    dplyr::mutate(
+      # Real observations
+      value_obs     = dplyr::if_else(date_diff <= tolerance_days_obs, value, NA_real_),
+      is_na_obs     = is.na(value_obs),
+      start_gap_obs = is_na_obs & !dplyr::lag(is_na_obs, default = FALSE),
+      nb_gap_obs    = cumsum(start_gap_obs),
+      gap_id_obs    = dplyr::if_else(is_na_obs, nb_gap_obs, NA_integer_),
+      
+      # Values for linear interpolation
+      value_tol     = dplyr::if_else(date_diff <= 7, value, NA_real_),
+      is_na_tol     = is.na(value_tol),
+      start_gap_tol = is_na_tol & !dplyr::lag(is_na_tol, default = FALSE),
+      nb_gap_tol    = cumsum(start_gap_tol),
+      gap_id_tol    = dplyr::if_else(is_na_tol, nb_gap_tol, NA_integer_)
+    ) %>%
+    dplyr::group_by(name, depth, gap_id_obs) %>%
+    dplyr::mutate(size_gap_obs = dplyr::if_else(is.na(gap_id_obs), 0L, dplyr::n())) %>%
+    dplyr::ungroup() %>%
+    dplyr::group_by(name, depth, gap_id_tol) %>%
+    dplyr::mutate(size_gap_tol = dplyr::if_else(is.na(gap_id_tol), 0L, dplyr::n())) %>%
+    dplyr::ungroup()
+}
+
 ##### Step 3 : Linear interpolation for small gaps  #####
 interp_small_gaps <- function(ts_all, max_gap = 5){
+  ts_all %>%
+    group_by(name, depth) %>%
+    mutate(
+      raw_value    = value,
+      value_interp = castr::interpolate(
+        x    = closest_date[!is.na(raw_value)],
+        y    = raw_value[!is.na(raw_value)],
+        xout = target_date
+      ),
+      value_final  = dplyr::coalesce(value_obs, value_interp),
+      value_final  = if_else(size_gap > max_gap, NA_real_, value_final)
+    ) %>%
+    ungroup()
+}
+
+# Version for plankton
+interp_small_gaps_2 <- function(ts_all, max_gap = 3){
+  ts_all %>%
+    group_by(name, depth) %>%
+    mutate(
+      raw_value    = value,
+      value_interp = castr::interpolate(
+        x    = closest_date[!is.na(raw_value)],
+        y    = raw_value[!is.na(raw_value)],
+        xout = target_date
+      ),
+      value_final  = dplyr::coalesce(value_obs, value_interp),
+      value_final  = if_else(size_gap_tol >= max_gap, NA_real_, value_final)
+    ) %>%
+    ungroup()
+}
+
+# 
+
+interp_small_gaps_plankton <-function(ts_all, max_gap = 5){
   ts_all %>%
     group_by(name, depth) %>%
     mutate(
@@ -127,7 +191,7 @@ impute_rf_and_reconstruct <- function(tab_anom_long, clim_wide,
   
   err_tbl <- tibble(
     var      = names(imp_rf$ximp),
-    RMSE     = sqrt(imp_rf$OOBerror),
+    RMSE     = (imp_rf$OOBerror),
     abs_mean = colMeans(abs(imp_rf$ximp), na.rm = TRUE),
     rel_error= RMSE / abs_mean
   ) %>% arrange(rel_error)
@@ -136,51 +200,67 @@ impute_rf_and_reconstruct <- function(tab_anom_long, clim_wide,
 }
 
 ##### Step 7 : Reconstruction long #####
-reconstruct_long_with_obs <- function(final_wide_rf, tablo_merged, vars_keep = NULL){
+reconstruct_long_with_obs <- function(final_wide_rf, tablo_merged, obs_wide_raw,
+                                      lin_cells, big_gap_cells, vars_keep = NULL){
   if (is.null(vars_keep)){
-    vars_keep <- names(tablo_merged) %>%
-      setdiff(c("target_date","closest_date","depth"))
+    vars_keep <- names(tablo_merged) %>% setdiff(c("target_date","closest_date","depth"))
   }
   
-  obs_long <- tablo_merged %>%
-    select(target_date, depth, all_of(vars_keep)) %>%
-    pivot_longer(cols = all_of(vars_keep), names_to = "var", values_to = "obs")
+  # Observations only when within tolerance (value_obs)
+  obs_long <- obs_wide_raw %>%
+    dplyr::select(target_date, depth, dplyr::all_of(vars_keep)) %>%
+    tidyr::pivot_longer(dplyr::all_of(vars_keep), names_to = "var", values_to = "obs")
   
   base_cols <- names(final_wide_rf)
   base_cols <- base_cols[ base_cols != "target_date" &
                             !grepl("^(anom_|clim_)", base_cols) &
                             grepl("_(\\d+)$", base_cols) ]
   
-  final_wide_rf_base <- final_wide_rf %>%
-    select(target_date, all_of(base_cols))
+  final_wide_rf_base <- final_wide_rf %>% dplyr::select(target_date, dplyr::all_of(base_cols))
   
   df_long_rf <- final_wide_rf_base %>%
-    pivot_longer(cols = -target_date,
-                 names_to = c("var","depth"),
-                 names_pattern = "^(.*)_(\\d+)$",
-                 values_to = "recon") %>%
-    mutate(depth = safe_as_num(depth)) %>%
-    left_join(obs_long %>% mutate(depth = safe_as_num(depth)),
-              by = c("target_date","depth","var")) %>%
-    group_by(var, depth) %>%
-    mutate(
+    tidyr::pivot_longer(cols = -target_date,
+                        names_to   = c("var","depth"),
+                        names_pattern = "^(.*)_(\\d+)$",
+                        values_to  = "recon") %>%
+    dplyr::mutate(depth = safe_as_num(depth)) %>%
+    # Join obs, linear flags/values, big-gap flags
+    dplyr::left_join(obs_long %>% dplyr::mutate(depth = safe_as_num(depth)),
+                     by = c("target_date","depth","var")) %>%
+    dplyr::left_join(lin_cells,     by = c("target_date","depth","var")) %>%
+    dplyr::left_join(big_gap_cells, by = c("target_date","depth","var")) %>%
+    dplyr::group_by(var, depth) %>%
+    dplyr::mutate(
       first       = suppressWarnings(min(target_date[!is.na(obs)], na.rm = TRUE)),
       last        = suppressWarnings(max(target_date[!is.na(obs)], na.rm = TRUE)),
       has_obs     = is.finite(first) & is.finite(last),
       in_range    = has_obs & target_date >= first & target_date <= last,
       was_missing = is.na(obs),
-      final       = ifelse(was_missing & in_range, recon, obs),
-      show_red    = was_missing & in_range
+      
+      # Flags
+      show_red_lin = !is.na(lin_value),                                # small-gap linear
+      show_red_rf  = is.na(lin_value) & was_missing & in_range,        # big-gap RF
+      
+      # Final value preference: observed > linear > RF
+      final = dplyr::case_when(
+        !is.na(obs)                     ~ obs,
+        !is.na(lin_value)               ~ lin_value,
+        was_missing & in_range          ~ recon,
+        TRUE                            ~ recon   # outside obs-range: keep recon as fallback
+      )
     ) %>%
-    ungroup()
+    dplyr::ungroup() %>%
+    dplyr::mutate(show_red = show_red_lin | show_red_rf)  # if you still want a combined flag
   
   final_panel_rf <- df_long_rf %>%
-    select(target_date, depth, var, final) %>%
-    pivot_wider(names_from = var, values_from = final) %>%
-    arrange(depth, target_date)
+    dplyr::select(target_date, depth, var, final) %>%
+    tidyr::pivot_wider(names_from = var, values_from = final) %>%
+    dplyr::arrange(depth, target_date)
   
   list(df_long_rf = df_long_rf, final_panel_rf = final_panel_rf)
 }
+
+
 
 ##### Step 8 : Whole pipeline #####
 run_to_rf <- function(df_long,
@@ -193,8 +273,23 @@ run_to_rf <- function(df_long,
 ){
   # Step 1–3 : Regularisation + small gaps
   table_reg <- regularize_panel(df_long, start_date, by_days, tolerance_days)
-  ts_all    <- tag_gaps(table_reg)
-  interp_lin <- interp_small_gaps(ts_all, max_gap = max_gap_interp)
+  ts_all    <- tag_gaps_2(table_reg)
+  obs_wide_raw <- ts_all %>%
+    select(target_date, depth, name, value_obs) %>% # value _obs  = value if in the tolerance interval otherwise NA
+    tidyr::pivot_wider(names_from = name, values_from = value_obs)
+  interp_lin <- interp_small_gaps_2(ts_all, max_gap = max_gap_interp)
+  
+  
+  # Cells filled by linear interpolation (small gaps)
+  lin_cells <- interp_lin %>%
+    dplyr::filter(is.na(value_obs), !is.na(value_final), size_gap > 0, size_gap <= max_gap_interp) %>%
+    dplyr::transmute(target_date, depth, var = name, lin_value = value_final)
+  
+  # Cells that were big gaps (left NA at this stage → will be RF later)
+  big_gap_cells <- interp_lin %>%
+    dplyr::filter(is.na(value_obs), size_gap > max_gap_interp) %>%
+    dplyr::transmute(target_date, depth, var = name, is_big_gap = TRUE)
+  
   
   # Step 4 
   interp_wide <- interp_lin %>%
@@ -239,7 +334,13 @@ run_to_rf <- function(df_long,
   
   # Step 6 : imputation RF and reconstruction
   imp <- impute_rf_and_reconstruct(tab_anom_long, clim_wide, n_cores = n_cores)
-  recon <- reconstruct_long_with_obs(imp$final_wide_rf, tablo_merged, vars_keep = vars_all)
+  recon <- reconstruct_long_with_obs(
+    imp$final_wide_rf, tablo_merged,
+    obs_wide_raw = obs_wide_raw,    
+    lin_cells = lin_cells,          
+    big_gap_cells = big_gap_cells,  
+    vars_keep = vars_all
+  )
   
   # What is out
   list(
@@ -247,7 +348,7 @@ run_to_rf <- function(df_long,
     final_panel_rf  = recon$final_panel_rf,
     clim_wk_smooth  = clim_wk_smooth,
     rf_errors       = imp$rf_errors,
-    debug_interp    = interp_lin %>% select(target_date, closest_date, depth, name, value, value_final, size_gap)
+    debug_interp    = interp_lin %>% select(target_date, closest_date, depth, name, date_diff, value, value_obs,value_final, size_gap)
   )
 }
 
@@ -278,6 +379,32 @@ plot_rf_series <- function(df_long_rf,
     theme_bw() +
     labs(x = "Date", y = NULL)
 }
+
+# Other function that works for plankton
+plot_rf_series_2 <- function(df_long_rf, vars, years = NULL, depths = NULL) {
+  df <- df_long_rf %>% dplyr::filter(var %in% vars)
+  
+  if (!is.null(years))  df <- df %>% dplyr::filter(lubridate::year(target_date) %in% years)
+  if (!is.null(depths)) df <- df %>% dplyr::filter(depth %in% depths)
+  
+  if (!"show_red_lin" %in% names(df)) df$show_red_lin <- FALSE
+  if (!"show_red_rf"  %in% names(df)) df$show_red_rf  <- df$show_red %||% FALSE
+  
+  ggplot(df, aes(x = target_date)) +
+    geom_line(aes(y = final)) +
+  
+    # geom_point(aes(y = obs), size = 0.8, alpha = 0.6) +
+    geom_point(data = df %>% dplyr::filter(show_red_lin),
+               aes(y = final), shape = 16, size = 1.2, color = "orange") +
+    geom_point(data = df %>% dplyr::filter(show_red_rf),
+               aes(y = final), shape = 16, size = 1.2, color = "red") +
+    facet_wrap(~ depth, scales = "free_y") +
+    theme_bw() +
+    labs(x = "Date", y = NULL,
+         title = paste("Série régularisée –", paste(vars, collapse = ", ")),
+         subtitle = "Orange = linear interpolation, Rouge = RF (big gaps)")
+}
+
 
 # Function to remove median and smooth
 weekly_clim_smooth <- function(df_long_idx) {
