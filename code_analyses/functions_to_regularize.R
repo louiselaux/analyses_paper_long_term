@@ -407,7 +407,8 @@ interp_small_gaps_2 <- function(ts_all, max_gap = 3){
         xout = target_date
       ),
       value_final  = dplyr::coalesce(value_obs, value_interp),
-      value_final  = if_else(size_gap_tol >= max_gap, NA_real_, value_final)
+      value_final  = if_else(size_gap_tol >= max_gap, NA_real_, value_final),
+      used_interp  = is.na(value_obs) & !is.na(value_interp) & (size_gap_tol <= max_gap)
     ) %>%
     ungroup()
 }
@@ -437,9 +438,8 @@ run_to_clim <- function(df_long,
   interp_lin <- interp_small_gaps_2(ts_all, max_gap = max_gap_interp)
   
   # Tag cells
-  lin_cells <- interp_lin %>%
-    dplyr::filter(is.na(value_obs), !is.na(value_final),
-                  size_gap_tol > 0, size_gap_tol <= max_gap_interp) %>%
+   lin_cells <- interp_lin %>%
+    dplyr::filter(used_interp) %>%
     dplyr::transmute(target_date, depth, var = name, lin_value = value_final)
   
   big_gap_cells <- interp_lin %>%

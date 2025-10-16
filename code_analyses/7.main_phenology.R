@@ -39,7 +39,7 @@ print(glm_days %>% arrange(p.value))
 p_days <- plot_days_models(days_det)
 print(p_days)
 
-##### Step 4: For plankton, GOG #####
+##### Step 4: For plankton, COG #####
 cog_tbl  <- compute_cog(interp_det, min_total = 0)
 lm_cog   <- fit_cog_lm(cog_tbl)
 print(lm_cog %>% arrange(p.value))

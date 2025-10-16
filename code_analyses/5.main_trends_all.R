@@ -18,11 +18,16 @@ clim_wk     <- read_tsv("data/clim_wk_smooth.tsv")
 final_panel <- res_plankton$final_panel_rf
 clim_wk<-res_plankton$clim_wk_smooth
 
+final_panel<- res_hplc$final_panel_rf
+clim_wk<- res_hplc$clim_wk_smooth
+
 # Choose the variables and the depth
 vars_keep   <- c("T","CHLA","NO3","S","O","SIOH4","MES")
 depth_one   <- "10" 
 
-vars_keep <- c("Acartiidae","Calanidae","Corycaeidae","Oithonidae")
+vars_keep <- c("Acartiidae","Calanidae","Corycaeidae","Oithonidae","Abylidae")
+
+vars_keep <- c("tchla","micro_chla","nano_chla","pico_chla")
 
 ##### Step 1 : deseasonalisation #####
 dstl <- build_dstl(
