@@ -1,6 +1,13 @@
 ##### Step 1 : Regularization #####
 
-# To regularize data 
+# Function to regularize data
+# First, define a target sequence of dates, with a value every 2 weeks, with a time gap of 14 days between each measurement. 
+# @Arguments :
+# df_long = the data frame containing the dates, the names of variables and the different values
+# start_date = the date to start the target sequence
+# by_days = 14, because we want a measurement every 2 weeks
+# tolerance_day = number of days around a target value, that will be accepted as "observed value"
+
 regularize_panel <- function(df_long,
                              start_date     = as.Date("1967-01-04"),
                              by_days        = 14,
@@ -24,6 +31,15 @@ regularize_panel <- function(df_long,
 }
 
 ##### Step 2 : Identify gap length #####
+
+# Function to identify gap lengths
+# @Arguments : data frame with the names of the different variables, the target_date based on a regularized sequence of 14 days, and the depth of the measurement
+# If the difference between the target date and the date of the closest value is lower than 3 days, then this value is considered as "observed value" 
+# If there is no observed value, then start_gap takes NA as value.The cumulative sum of consecutive na is calculated 
+# gap_id gives the id of the given gap
+
+
+
 tag_gaps <- function(table_reg){
   table_reg %>%
     arrange(name, target_date, depth) %>%
@@ -43,6 +59,13 @@ tag_gaps <- function(table_reg){
 
 
 ##### Step 3 : Linear interpolation for small gaps  #####
+# Function to perform linear interpolation for small gaps
+# @Arguments : data_frame with all variables, and names of variables, and depths, max_gap = size of gap to define a threshold below which a gap is considered as small
+# raw_value saves the original value of the data frame
+# interpolates based on all observed values
+# then, observed value is kept if available otherwise the interpolated one is kept 
+# the interpolation is removed and NA is put if the gap size is above threshold
+
 interp_small_gaps <- function(ts_all, max_gap = 5){
   ts_all %>%
     group_by(name, depth) %>%
@@ -62,6 +85,9 @@ interp_small_gaps <- function(ts_all, max_gap = 5){
 
 
 ##### Step 4 : Calculate the smoothed median #####
+# Function to compute smoothed median
+# @Arguments : data frame containing the names, values of variables and target_date
+# The median is calculated and then smoothed thanks to a rolling mean
 weekly_climatology <- function(tab_long){
   clim_wk <- tab_long %>%
     mutate(week = isoweek(target_date)) %>%
@@ -86,7 +112,44 @@ weekly_climatology <- function(tab_long){
     select(week, depth, name, season)
 }
 
+
+# Weekly climatology on raw data
+
+# From the raw data frame
+weekly_climatology_raw <- function(df_long) {
+  stopifnot(all(c("date", "depth", "name", "value") %in% names(df_long)))
+  
+  df_long %>%
+    # Isoweek
+    dplyr::mutate(week = lubridate::isoweek(as.Date(date))) %>%
+    
+    # Group by week, depth, name
+    dplyr::group_by(week, depth, name) %>%
+    
+    # Median on all the raw data
+    dplyr::summarise(
+      n_obs_raw = sum(!is.na(value)),
+      med_raw = median(value, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    
+    # Slide
+    dplyr::arrange(depth, name, week) %>%
+    dplyr::group_by(depth, name) %>%
+    dplyr::mutate(
+      # Slide seasonal
+      season = castr::slide(
+        med_raw, k = 1, n = 3,
+        fun = weighted.mean, w = c(1, 2, 1), na.rm = TRUE
+      )
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::select(week, depth, name, season, n_obs_raw, med_raw)
+}
 ##### Step 5 : Compute anomalies = value - median #####
+# Function to compute anomalies
+# @Arguments : data frame with the raw values and value of climatology (value - smoothed median)
+
 compute_anomalies <- function(tab_long, clim_wk_smooth){
   tab_long %>%
     mutate(week = isoweek(target_date)) %>%
@@ -96,6 +159,9 @@ compute_anomalies <- function(tab_long, clim_wk_smooth){
 }
 
 ##### Step 6 : Imputation RF on anomalies and reconstruction #####
+# Function to perform RF on anomalies for big gaps
+# @Arguments : data frame with the different values, climatologies (value- smoothed median), and parameters regarding parallelizing of the function, parameters regarding trees of the random forest : ntree, maxiter
+
 impute_rf_and_reconstruct <- function(tab_anom_long, clim_wide,
                                       n_cores = max(1, parallel::detectCores() %/% 2),
                                       ntree = 300, maxiter = 20){
@@ -103,43 +169,69 @@ impute_rf_and_reconstruct <- function(tab_anom_long, clim_wide,
     transmute(target_date,
               var_depth = paste0(name, "_", depth),
               anom, clim) %>%
-    pivot_wider(names_from = var_depth,
-                values_from = c(anom, clim),
-                names_sep = "_")
+    tidyr::pivot_wider(names_from = var_depth,
+                       values_from = c(anom, clim),
+                       names_sep = "_")
   
-  X_anom <- tab_wide %>% select(target_date, starts_with("anom_"))
-  X_mat  <- as.data.frame(X_anom %>% select(-target_date))
+  X_anom <- tab_wide %>% dplyr::select(target_date, dplyr::starts_with("anom_"))
+  X_mat  <- as.data.frame(X_anom %>% dplyr::select(-target_date))
   
+  ### Row full of NA --> no info so don't do RF
+  full_na_rows <- apply(X_mat, 1, function(z) all(is.na(z)))
+  
+  if (any(full_na_rows)) {
+    message("Warning : ", sum(full_na_rows),
+            "dates where all anomalies are at NA so don't do RF.")
+  }
+  
+  # RF on everything
   set.seed(9)
-  cl <- makeCluster(n_cores)
-  registerDoParallel(cl)
-  imp_rf <- missForest(X_mat, ntree = ntree, nodesize = c(2,5),
-                       parallelize = "variables", variablewise = TRUE,
-                       maxiter = maxiter)
-  stopCluster(cl)
+  cl <- parallel::makeCluster(n_cores)
+  doParallel::registerDoParallel(cl)
+  imp_rf <- missForest::missForest(X_mat, ntree = ntree, nodesize = c(2,5),
+                                   parallelize = "variables", variablewise = TRUE,
+                                   maxiter = maxiter)
+  parallel::stopCluster(cl)
   
-  imp_rf_anom <- bind_cols(target_date = X_anom$target_date,
-                           as.data.frame(imp_rf$ximp))
+  imp_rf_anom <- dplyr::bind_cols(target_date = X_anom$target_date,
+                                  as.data.frame(imp_rf$ximp))
   
   final_wide_rf <- imp_rf_anom %>%
-    left_join(clim_wide, by = "target_date")
+    dplyr::left_join(clim_wide, by = "target_date")
   
-  for (base in gsub("^anom_", "", setdiff(names(imp_rf_anom), "target_date"))) {
+  base_names <- gsub("^anom_", "", setdiff(names(imp_rf_anom), "target_date"))
+  
+  # Reconstruction : anom + clim
+  for (base in base_names) {
     final_wide_rf[[base]] <- final_wide_rf[[paste0("anom_", base)]] +
       final_wide_rf[[paste0("clim_", base)]]
   }
   
-  err_tbl <- tibble(
+  ### For dates with full NA's --> no RF, median directly
+  
+  if (any(full_na_rows)) {
+    for (base in base_names) {
+      final_wide_rf[[base]][full_na_rows] <-
+        final_wide_rf[[paste0("clim_", base)]][full_na_rows]
+    }
+  }
+  
+  err_tbl <- tibble::tibble(
     var      = names(imp_rf$ximp),
     RMSE     = (imp_rf$OOBerror),
     abs_mean = colMeans(abs(imp_rf$ximp), na.rm = TRUE),
     rel_error= RMSE / abs_mean
-  ) %>% arrange(rel_error)
+  ) %>% dplyr::arrange(rel_error)
   
   list(final_wide_rf = final_wide_rf, rf_errors = err_tbl)
 }
 
+
 ##### Step 7 : Reconstruction long #####
+# Function to reconstruct one data frame from all of this
+# If a vlue is in the tolerance interval then --> value_obs
+# Join verything together and flag the different values 
+
 reconstruct_long_with_obs <- function(final_wide_rf, tablo_merged, obs_wide_raw,
                                       lin_cells, big_gap_cells, vars_keep = NULL){
   if (is.null(vars_keep)){
@@ -203,6 +295,9 @@ reconstruct_long_with_obs <- function(final_wide_rf, tablo_merged, obs_wide_raw,
 
 
 ##### Step 8 : Whole pipeline  for hydro #####
+# Function to do it all directly
+
+
 run_to_rf <- function(df_long,
                       start_date     = as.Date("1967-01-04"),
                       by_days        = 14,
@@ -257,13 +352,23 @@ run_to_rf <- function(df_long,
     transmute(target_date, depth, !!!rlang::syms(vars_all))
   
   # Step 5 : Clim + anomalies
+
+  #clim_wk_smooth <- weekly_climatology(tab_long)
+  #write_tsv(clim_wk_smooth, file = "data/clim_wk_smooth.tsv")
+  
+  #tab_anom_long <- compute_anomalies(tab_long, clim_wk_smooth)
+  # Step 5 : Clim à partir des données BRUTES + anomalies sur la série régularisée
+  
+  # Climatology on raw data
+  clim_wk_smooth <- weekly_climatology_raw(df_long)
+  
+  # Regularized series in long
   tab_long <- tab %>%
-    pivot_longer(all_of(vars_all), names_to = "name", values_to = "value") %>%
-    mutate(week = isoweek(target_date))
+    tidyr::pivot_longer(dplyr::all_of(vars_all),
+                        names_to = "name", values_to = "value") %>%
+    dplyr::mutate(week = lubridate::isoweek(target_date))
   
-  clim_wk_smooth <- weekly_climatology(tab_long)
-  write_tsv(clim_wk_smooth, file = "data/clim_wk_smooth.tsv")
-  
+  # Anomaly = regularized - median based on raw data 
   tab_anom_long <- compute_anomalies(tab_long, clim_wk_smooth)
   
   clim_wide <- tab_anom_long %>%
@@ -366,7 +471,14 @@ weekly_clim_smooth <- function(df_long_idx) {
 }
 
 
+##########################################################################
+
 # Functions for plankton
+
+#Function to tag the gap sizes
+# @Argument : data_frame with the different values and variables, tolerance_days, by_days = 14, for the target date sequence
+# Here, we add a tolerance for interpolation, if in 7 days --> then --> keep it for linear interpolation and do not take the median of clim
+
 tag_gaps_2 <- function(table_reg, tolerance_days_obs = 3, by_days = 14){
   table_reg %>%
     dplyr::arrange(name, target_date, depth) %>%
@@ -395,7 +507,8 @@ tag_gaps_2 <- function(table_reg, tolerance_days_obs = 3, by_days = 14){
 }
 
 
-# Interpolation
+# Interpolation function 
+# @Argument : dataframe, max_gap = 3 
 interp_small_gaps_2 <- function(ts_all, max_gap = 3){
   ts_all %>%
     group_by(name, depth) %>%
